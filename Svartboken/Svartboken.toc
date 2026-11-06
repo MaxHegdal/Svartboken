@@ -1,0 +1,14 @@
+## Interface: 16001
+## Title: Svartboken
+## Notes: Visar vem som gav dig killing blow i open world och samlar gängets dödsfall.
+## Version: 1.1.0
+## SavedVariables: SvartbokenDB
+## IconTexture: Interface\Icons\INV_Misc_Bone_HumanSkull_01
+## AddonCompartmentFunc: Svartboken_OnCompartmentClick
+
+Core.lua
+Sync.lua
+Toast.lua
+UI.lua
+Tracker.lua
+Commands.lua
