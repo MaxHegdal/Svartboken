@@ -29,6 +29,7 @@ local DEFAULTS = {
     minimapHidden = false,
 }
 
+local MAX_DIAG = 200
 local seen = {}
 
 -- Klienten kan returnera "secret values" som addons inte får läsa eller skicka vidare.
@@ -107,6 +108,29 @@ function ns.Print(msg)
     print("|cffdb1f2eSvartboken|r " .. tostring(msg))
 end
 
+function ns.Describe(v)
+    if v == nil then return "nil" end
+    if issecretvalue and issecretvalue(v) then return "<SECRET>" end
+    return tostring(v)
+end
+
+-- Diagnoslogg i sparfilen, så att fel går att felsöka efter en /reload utan att kopiera ur chatten.
+function ns.Diag(text)
+    local db = ns.db
+    if not db then return end
+    local log = db.diag
+    log[#log + 1] = date("%H:%M:%S ") .. tostring(text)
+    while #log > MAX_DIAG do table.remove(log, 1) end
+end
+
+function ns.DescribeEvent(event)
+    local keys, parts = {}, {}
+    for key in pairs(event) do keys[#keys + 1] = tostring(key) end
+    table.sort(keys)
+    for i, key in ipairs(keys) do parts[i] = key .. "=" .. ns.Describe(event[key]) end
+    return table.concat(parts, " ")
+end
+
 function ns.InitDB()
     if type(SvartbokenDB) ~= "table" then SvartbokenDB = {} end
     local db = SvartbokenDB
@@ -115,6 +139,7 @@ function ns.InitDB()
     db.notes = type(db.notes) == "table" and db.notes or {}
     db.gang = type(db.gang) == "table" and db.gang or {}
     db.npcs = type(db.npcs) == "table" and db.npcs or {}
+    db.diag = type(db.diag) == "table" and db.diag or {}
     db.settings = type(db.settings) == "table" and db.settings or {}
     for k, v in pairs(DEFAULTS) do
         if db.settings[k] == nil then db.settings[k] = v end
@@ -128,8 +153,20 @@ function ns.InitDB()
             table.remove(db.deaths, i)
         end
     end
+    local hasDemo = false
     for _, d in ipairs(db.deaths) do
         if d.id then seen[d.id] = true end
+        if d.demo then hasDemo = true end
+    end
+    -- En demo-anteckning utan demo-rader är en rest från en äldre version.
+    if not hasDemo then
+        for name, note in pairs(db.notes) do
+            if note.demo then db.notes[name] = nil end
+        end
+    end
+    -- Äldre versioner sparade gänget som Förnamn-Efternamn.
+    for i, name in ipairs(db.gang) do
+        db.gang[i] = ns.PlayerName(name) or name
     end
 end
 
@@ -284,9 +321,11 @@ function ns.CountKills(killer, me)
     return mine, all
 end
 
--- Varje spelare på Forever har exakt förnamn och efternamn, så ett ord kan inte vara en spelare.
-function ns.IsFullName(name)
-    return type(name) == "string" and name:find("^[^%s%-]+ [^%s%-]+$") ~= nil
+-- En spelare heter ett eller två ord, beroende på om källan tar med efternamnet.
+-- Tre ord eller flera bindestreck kan bara vara en mob.
+function ns.CouldBePlayerName(name)
+    if type(name) ~= "string" then return false end
+    return name:find("^[^%s%-]+$") ~= nil or name:find("^[^%s%-]+ [^%s%-]+$") ~= nil
 end
 
 function ns.ClassColor(class)

@@ -24,7 +24,7 @@ local JOIN_RETRY = 30
 local JOIN_ATTEMPTS = 4
 
 local ALLOWED_CHANNELS = { PARTY = true, RAID = true, GUILD = true, WHISPER = true, CHANNEL = true }
-local ALLOWED_TYPES = { player = true, npc = true, env = true, unknown = true }
+local ALLOWED_TYPES = { player = true, pet = true, unknown = true }
 
 local queue = {}
 local ticker
@@ -33,6 +33,7 @@ local lastShare = 0
 local offlineUntil, heardAt, pingedAt, whisperedAt = {}, {}, {}, {}
 local peers = {}
 local joinToken = 0
+local joinCalls = 0
 local lastPong = 0
 local activeTest
 local versionAnnounced = false
@@ -97,7 +98,7 @@ function ns.Decode(text, senderShort)
 
     -- Bara spelare hör hemma i trackern, även om en äldre version skickar något annat.
     local killer = ns.PlayerName(p[6])
-    if not ns.IsFullName(killer) or p[7] == "npc" or p[7] == "env" then return nil end
+    if not killer or p[7] == "npc" or p[7] == "env" then return nil end
     local assists
     if p[15] ~= "" then
         assists = {}
@@ -168,9 +169,21 @@ function ns.ChannelActive()
     return ns.db.settings.channelSync and ChannelId() ~= nil
 end
 
+-- Vilken funktion som finns skiljer sig mellan klienter, och Blizzards egen kod använder
+-- JoinPermanentChannel. Varje försök tar nästa funktion, tills en av dem fungerar.
 local function JoinChannel()
-    local join = JoinTemporaryChannel or JoinChannelByName
-    if join then pcall(join, CHANNEL_NAME) end
+    local functions = {}
+    if JoinTemporaryChannel then functions[#functions + 1] = { "JoinTemporaryChannel", JoinTemporaryChannel } end
+    if JoinChannelByName then functions[#functions + 1] = { "JoinChannelByName", JoinChannelByName } end
+    if JoinPermanentChannel then functions[#functions + 1] = { "JoinPermanentChannel", JoinPermanentChannel } end
+    if #functions == 0 then
+        ns.Diag("kanal: ingen funktion för att gå med finns")
+        return
+    end
+    joinCalls = joinCalls + 1
+    local chosen = functions[(joinCalls - 1) % #functions + 1]
+    local ok, err = pcall(chosen[2], CHANNEL_NAME)
+    ns.Diag("kanal: " .. chosen[1] .. " ok=" .. tostring(ok) .. (ok and "" or (" fel=" .. ns.Describe(err))))
 end
 
 function ns.ScheduleChannelJoin()
@@ -190,6 +203,7 @@ function ns.ScheduleChannelJoin()
         JoinChannel()
         if attempt < JOIN_ATTEMPTS then C_Timer.After(JOIN_RETRY, Try) end
         C_Timer.After(1, function()
+            ns.Diag("kanal: försök " .. attempt .. " gav nummer " .. ns.Describe(ChannelId()))
             ns.AnnounceVersion()
             if ns.RefreshUI then ns.RefreshUI() end
         end)
@@ -284,9 +298,12 @@ local function InMyGroup(name)
 end
 
 local function Targets()
-    -- Kanalen når alla, så grupp, guild och gänglista behövs bara om den inte fungerar.
-    if ns.ChannelActive() then return { { channel = "CHANNEL" } } end
+    -- Alla vägar på en gång: dubbletter sorteras bort hos mottagaren, och då spelar det
+    -- ingen roll om någon av vägarna inte fungerar.
     local out = {}
+    if ns.ChannelActive() then
+        out[#out + 1] = { channel = "CHANNEL" }
+    end
     if IsInRaid() then
         out[#out + 1] = { channel = "RAID" }
     elseif IsInGroup() then
@@ -382,9 +399,14 @@ local function PumpQueue()
         target = tostring(id)
     end
     if entry.target then whisperedAt[GangKey(entry.target)] = GetTime() end
-    local result = C_ChatInfo.SendAddonMessage(ns.PREFIX, entry.msg, entry.channel, target)
+    local ok, result = pcall(C_ChatInfo.SendAddonMessage, ns.PREFIX, entry.msg, entry.channel, target)
     ns.lastSendResult = result
-    if IsTargetOffline(result) and entry.target then
+    ns.Diag("ut " .. entry.channel .. " " .. ns.Describe(target) .. " typ=" .. entry.msg:sub(1, 1)
+        .. " ok=" .. tostring(ok) .. " svar=" .. ns.Describe(result))
+    if not ok then
+        -- Ett fel här får inte fastna i kön och upprepas för evigt.
+        table.remove(queue, 1)
+    elseif IsTargetOffline(result) and entry.target then
         MarkOffline(GangKey(entry.target))
     elseif not IsThrottle(result) then
         table.remove(queue, 1)
@@ -418,12 +440,12 @@ end
 -- Knappen "Testa": frågar gänget om addonet svarar. Ett svar betyder att båda har varandra på listan.
 function ns.PingGang()
     if not CanSend() then return false, "Går bara att testa i open world." end
-    if ns.ChannelActive() then
+    local viaChannel = ns.ChannelActive()
+    if viaChannel then
         queue[#queue + 1] = { msg = PING, channel = "CHANNEL" }
-        EnsureTicker()
-        return true
+    elseif #ns.db.gang == 0 then
+        return false, "Gänglistan är tom."
     end
-    if #ns.db.gang == 0 then return false, "Gänglistan är tom." end
     local now = GetServerTime()
     for _, name in ipairs(ns.db.gang) do
         local key = GangKey(name)
@@ -453,14 +475,15 @@ local function FinishTest(test)
     if #names > 0 then
         text = "Svarade: " .. table.concat(names, ", ")
     elseif test.viaChannel and test.echoed then
-        text = "Kanalen fungerar, men ingen annan svarade. De andra behöver vara online, i open world och ha version 1.1.0 eller nyare."
+        text = "Kanalen fungerar, men ingen annan svarade. De andra behöver vara online, i open world och ha en aktuell version."
     elseif test.viaChannel then
-        text = "Ingen svarade och din egen signal kom inte tillbaka. Kör /sb debug och skicka utskriften."
+        text = "Ingen svarade, och din egen signal kom inte tillbaka genom kanalen. Se till att ni har varandra på gänglistan."
     else
         text = "Ingen svarade. Båda måste ha varandra på gänglistan och vara online."
     end
     ns.testResult = text
     ns.Print(text)
+    ns.Diag("test: " .. text)
     if ns.RefreshUI then ns.RefreshUI() end
 end
 
@@ -567,8 +590,12 @@ local function AllowFromSender(sender)
 end
 
 function ns.OnAddonMessage(prefix, text, channel, sender)
+    local rawChannel, rawSender = ns.Describe(channel), ns.Describe(sender)
     prefix, text, channel, sender = ns.Safe(prefix), ns.Safe(text), ns.Safe(channel), ns.Safe(sender)
-    if prefix ~= ns.PREFIX or not text or not sender then return end
+    if prefix ~= ns.PREFIX then return end
+    ns.Diag("in " .. rawChannel .. " från=" .. rawSender .. " jag=" .. ns.Describe(ns.playerName)
+        .. " typ=" .. (text and text:sub(1, 1) or "<SECRET>"))
+    if not text or not sender then return end
     if not ns.db.settings.sync or not ALLOWED_CHANNELS[channel] then return end
     if channel == "GUILD" and not ns.db.settings.guildSync then return end
     if channel == "CHANNEL" and not ns.db.settings.channelSync then return end
@@ -619,12 +646,20 @@ function ns.OnAddonMessage(prefix, text, channel, sender)
 
     if text:sub(1, 2) == "N~" then
         local note = ns.DecodeNote(text, senderShort)
-        if note then ns.ApplyNote(note.killer, note.text, note.author, note.ts) end
+        if note then
+            ns.ApplyNote(note.killer, note.text, note.author, note.ts)
+        else
+            ns.Diag("in: anteckning avvisad från " .. senderShort)
+        end
         return
     end
 
     local rec = ns.Decode(text, senderShort)
-    if rec then ns.AddDeath(rec) end
+    if rec then
+        ns.AddDeath(rec)
+    else
+        ns.Diag("in: dödsfall avvisat från " .. senderShort .. ": " .. text:sub(1, 80))
+    end
 end
 
 function ns.InitSync()

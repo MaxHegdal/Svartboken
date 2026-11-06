@@ -5,9 +5,11 @@ local RETRY_DELAYS = { 0.1, 0.4, 0.8, 1.5, 3 }
 local MAX_CLASS_CACHE = 1000
 local LOGIN_GRACE = 3
 local DEATH_DEDUPE = 5
-local MAX_RECAP_AGE = 15
+local MAX_RECAP_AGE = 60
 local MIN_EPOCH = 1000000000
 local PLAYER_FLAG = 0x400 -- COMBATLOG_OBJECT_TYPE_PLAYER
+local PLAYER_CONTROLLED_FLAG = 0x100 -- COMBATLOG_OBJECT_CONTROL_PLAYER
+local DUMP_FULL_EVENTS = 2
 
 local PASSIVE_EVENTS = {
     "PLAYER_DEAD",
@@ -57,29 +59,37 @@ end
 -- Avgör om mördaren är en spelare, NPC eller miljön så långt datan räcker.
 local function Classify(event, name)
     local guid = Field(event, "sourceGUID")
-    if type(guid) == "string" then
-        if guid:find("^Player%-") then
-            return "player", ClassFromGUID(guid) or ns.db.classes[name]
-        elseif guid:find("^Creature%-") or guid:find("^Vehicle%-") or guid:find("^GameObject%-") then
-            return "npc"
-        elseif guid:find("^Pet%-") then
-            return "npc"
-        end
+    if type(guid) == "string" and guid == Field(event, "destGUID") then
+        return "self"
     end
+    -- Flaggorna avgör först: en hunters Hawk har ett Creature-GUID men styrs av en spelare.
     local flags = Field(event, "sourceFlags")
     if type(flags) == "number" and flags ~= 0 and bit then
         if bit.band(flags, PLAYER_FLAG) ~= 0 then
-            return "player", ns.db.classes[name]
+            local class = type(guid) == "string" and ClassFromGUID(guid) or nil
+            return "player", class or ns.db.classes[name]
+        elseif bit.band(flags, PLAYER_CONTROLLED_FLAG) ~= 0 then
+            return "pet"
         end
         return "npc"
+    end
+    if type(guid) == "string" then
+        if guid:find("^Player%-") then
+            return "player", ClassFromGUID(guid) or ns.db.classes[name]
+        elseif guid:find("^Pet%-") then
+            return "pet"
+        elseif guid:find("^Creature%-") or guid:find("^Vehicle%-") or guid:find("^GameObject%-") then
+            return "npc"
+        end
     end
     if ns.db.classes[name] then
         return "player", ns.db.classes[name]
     end
-    if ns.db.npcs[name] or not ns.IsFullName(name) then
+    if ns.db.npcs[name] or not ns.CouldBePlayerName(name) then
         return "npc"
     end
-    -- Två ord som aldrig setts: "Anna Berg" och "Bloodsail Raider" går inte att skilja på.
+    -- Aldrig sett: "Anna Berg" och "Bloodsail Raider" går inte att skilja på. Hellre en mob
+    -- för mycket än att en riktig PvP-död försvinner utan att någon märker det.
     return "unknown"
 end
 
@@ -99,6 +109,21 @@ end
 local function EnvironmentName(envType)
     if type(envType) ~= "string" then return "Miljön" end
     return _G["ACTION_ENVIRONMENTAL_DAMAGE_" .. envType:upper()] or envType
+end
+
+-- Husdjur säger inte vem som äger dem, men ägaren brukar finnas bland de senaste slagen.
+local function NearestPlayer(events)
+    for i = 1, #events do
+        local ev = events[i]
+        if type(ev) == "table" then
+            local name = SourceName(ev)
+            if name then
+                local kind, class = Classify(ev, name)
+                if kind == "player" then return name, class end
+            end
+        end
+    end
+    return nil
 end
 
 -- Blizzards eget recap-fönster räknar events[1] som det dödande slaget.
@@ -130,6 +155,15 @@ function ns.ParseRecap(events)
         if info.killer then
             info.ktype, info.kclass = Classify(first, info.killer)
         end
+        if info.ktype == "pet" then
+            local owner, ownerClass = NearestPlayer(events)
+            if owner then
+                info.spell = info.killer .. (info.spell and (": " .. info.spell) or "")
+                info.killer, info.ktype, info.kclass = owner, "player", ownerClass
+            else
+                info.spell = "Spelares husdjur" .. (info.spell and (": " .. info.spell) or "")
+            end
+        end
     end
 
     if type(info.amount) ~= "number" then info.amount = nil end
@@ -141,8 +175,9 @@ function ns.ParseRecap(events)
         local ev = events[i]
         if type(ev) == "table" then
             local name = SourceName(ev)
-            local isMob = name and Classify(ev, name) == "npc"
-            if name and not isMob and name ~= info.killer and not added[name] and #assists < 3 then
+            local kind = name and Classify(ev, name)
+            local isPlayer = kind == "player" or kind == "unknown"
+            if isPlayer and name ~= info.killer and not added[name] and #assists < 3 then
                 added[name] = true
                 assists[#assists + 1] = name
             end
@@ -154,6 +189,8 @@ end
 
 local function Finish(death, info)
     pending = nil
+    ns.Diag("död: mördare=" .. ns.Describe(info and info.killer) .. " typ=" .. ns.Describe(info and info.ktype)
+        .. " klass=" .. ns.Describe(info and info.kclass) .. " attack=" .. ns.Describe(info and info.spell))
     if not info then
         -- Det går inte att veta om det var en spelare, så inget sparas. Säg till en gång.
         if not warnedUnreadable then
@@ -163,8 +200,8 @@ local function Finish(death, info)
         return
     end
     if type(info.stamp) == "number" then ns.db.lastKillStamp = info.stamp end
-    -- Bara spelare räknas. Mobs och miljöskada ger varken rad, popup eller synk.
-    if not info.killer or info.ktype == "npc" or info.ktype == "env" then return end
+    -- Bara spelare och deras husdjur räknas. Mobs, miljöskada och självmord ger varken rad, popup eller synk.
+    if not info.killer or info.ktype == "npc" or info.ktype == "env" or info.ktype == "self" then return end
     local rec = {
         id = ns.MakeId(death.victim, death.ts),
         ts = death.ts,
@@ -193,13 +230,40 @@ local function TryRead(death, attempt)
     local ok, events = pcall(GetRecapEvents)
     if ok and events then
         local parsedOk, parsed = pcall(ns.ParseRecap, events)
-        if parsedOk then info = parsed end
+        if parsedOk then
+            info = parsed
+        else
+            ns.Diag("recap: tolkningsfel " .. ns.Describe(parsed))
+        end
+    end
+    -- Exakt vad spelet ger, för att kunna göra filtret säkrare.
+    if attempt == 1 or not RETRY_DELAYS[attempt] then
+        ns.Diag("recap: försök " .. attempt .. " antal=" .. ns.Describe(ok and events and #events))
+        if ok and events then
+            for i = 1, #events do
+                local ev = events[i]
+                if type(ev) == "table" then
+                    if i <= DUMP_FULL_EVENTS then
+                        local dumpOk, dump = pcall(ns.DescribeEvent, ev)
+                        ns.Diag("recap[" .. i .. "]: " .. ns.Describe(dump) .. (dumpOk and "" or " (fel)"))
+                    else
+                        ns.Diag("recap[" .. i .. "]: " .. ns.Describe(ev.sourceName) .. " flaggor="
+                            .. ns.Describe(ev.sourceFlags) .. " guid=" .. ns.Describe(ev.sourceGUID))
+                    end
+                end
+            end
+        end
     end
     -- Recapen kan vara kvar från förra dödsfallet, som kan ha skett i en BG vi inte läste.
     if info and type(info.stamp) == "number" then
         local isSame = info.stamp == ns.db.lastKillStamp
         local isOld = info.stamp > MIN_EPOCH and death.ts - info.stamp > MAX_RECAP_AGE
-        if isSame or isOld then info = nil end
+        if isSame or isOld then
+            if not RETRY_DELAYS[attempt] then
+                ns.Diag("recap: gammal, stämpel=" .. ns.Describe(info.stamp) .. " nu=" .. death.ts)
+            end
+            info = nil
+        end
     end
     if info then
         Finish(death, info)
@@ -211,6 +275,7 @@ local function TryRead(death, attempt)
 end
 
 local function OnPlayerDead()
+    ns.Diag("PLAYER_DEAD open=" .. tostring(ns.IsOpenWorld()) .. " väntar=" .. tostring(pending ~= nil))
     if not ns.IsOpenWorld() or pending then return end
     local now = GetTime()
     -- PLAYER_DEAD kan fyras vid inloggning om karaktären redan ligger död.
@@ -263,6 +328,9 @@ function ns.ObserveUnit(unit)
         end
     end
     classes[name] = class
+    -- Death recap kan tänkas ge bara förnamnet.
+    local first = name:match("^(%S+) ")
+    if first then classes[first] = class end
 end
 
 local function UpdateActive()
@@ -289,7 +357,21 @@ function ns.IsActive()
     return active
 end
 
-frame:SetScript("OnEvent", function(_, event, ...)
+local function LogStartup()
+    local rawName, rawSecond = UnitName("player")
+    local available = {}
+    for _, name in ipairs({ "JoinTemporaryChannel", "JoinChannelByName", "JoinPermanentChannel", "GetChannelName", "RegionalUniqueNamesEnabled" }) do
+        available[#available + 1] = name .. "=" .. tostring(_G[name] ~= nil)
+    end
+    -- Egen plats, så att startinfon inte trycks ut ur loggen när det är mycket trafik.
+    ns.db.diagStart = {
+        "v" .. ns.VERSION .. " interface=" .. ns.Describe((select(4, GetBuildInfo()))),
+        "UnitName=" .. ns.Describe(rawName) .. " / " .. ns.Describe(rawSecond) .. " jag=" .. ns.Describe(ns.playerName),
+        table.concat(available, " "),
+    }
+end
+
+local function HandleEvent(event, ...)
     if event == "ADDON_LOADED" then
         if ... == ns.ADDON then
             ns.InitDB()
@@ -299,8 +381,14 @@ frame:SetScript("OnEvent", function(_, event, ...)
         end
     elseif event == "PLAYER_LOGIN" then
         ns.playerName = ns.PlayerName(UnitName("player"))
+        LogStartup()
         ns.InitSync()
         if ns.InitMinimapButton then ns.InitMinimapButton() end
+    elseif event == "ADDON_ACTION_BLOCKED" or event == "ADDON_ACTION_FORBIDDEN" then
+        local addon, action = ...
+        if addon == ns.ADDON then
+            ns.Diag(event .. ": " .. ns.Describe(action))
+        end
     elseif event == "PLAYER_ENTERING_WORLD" then
         enteredAt = GetTime()
         UpdateActive()
@@ -317,8 +405,19 @@ frame:SetScript("OnEvent", function(_, event, ...)
     elseif event == "NAME_PLATE_UNIT_ADDED" then
         pcall(ns.ObserveUnit, (...))
     end
+end
+
+-- Lua-fel är avstängda i spelet som standard, så de sparas i loggen också.
+frame:SetScript("OnEvent", function(_, event, ...)
+    local ok, err = pcall(HandleEvent, event, ...)
+    if not ok then
+        ns.Diag("FEL i " .. event .. ": " .. ns.Describe(err))
+        if geterrorhandler then geterrorhandler()(err) end
+    end
 end)
 
+frame:RegisterEvent("ADDON_ACTION_BLOCKED")
+frame:RegisterEvent("ADDON_ACTION_FORBIDDEN")
 frame:RegisterEvent("ADDON_LOADED")
 frame:RegisterEvent("PLAYER_LOGIN")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")

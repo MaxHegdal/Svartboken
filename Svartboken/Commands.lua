@@ -61,11 +61,7 @@ local function RemoveDemoData()
     ns.RemoveDeaths(function(d) return d.demo end)
 end
 
-local function Describe(v)
-    if v == nil then return "nil" end
-    if issecretvalue and issecretvalue(v) then return "<SECRET>" end
-    return tostring(v)
-end
+local Describe = ns.Describe
 
 -- Skriver ut exakt vad klienten ger addonet, så att det går att felsöka i spelet.
 local function Debug()

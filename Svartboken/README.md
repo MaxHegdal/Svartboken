@@ -47,11 +47,12 @@ När du dör i open world visas en liten ruta med mördaren. Vänsterklick öppn
 ## Bra att veta
 
 - **Open world:** addonet lyssnar inte på något i BG, arena, dungeon, raid eller scenario. Dödsfall där sparas inte.
-- **Bara spelare:** en mördare räknas bort om spelet säger att det är en mob, om du sett namnet som mob på en nameplate eller i target, eller om namnet inte har exakt två ord. Två ord som addonet aldrig sett sparas som möjlig spelare, så en mob med två ord kan ibland slinka med. Dödas du av en spelares husdjur räknas det inte.
-- **Synk:** alla med addonet går automatiskt med i en dold kanal och delar dödsfall och sparade anteckningar där. Ni behöver spela på samma ruleset. Den som är offline eller i en instans missar det som skickas, tills någon trycker på **Dela historik**.
+- **Bara spelare:** spelet talar om vem som styr den som gav dödsstöten, så mobs och miljöskada räknas aldrig. Dödas du av en spelares husdjur krediteras den senaste spelaren som slog dig. Finns ingen spelare bland slagen visas husdjuret i stället.
+- **Synk:** dödsfall och sparade anteckningar skickas samtidigt till en dold kanal som alla med addonet går med i, till din grupp eller raid, till gänglistan och till guilden om guild-synk är på. Dubbletter sorteras bort. Den som är offline eller i en instans missar det som skickas, tills någon trycker på **Dela historik**.
 - **Vem som är med:** vem som helst med addonet på samma ruleset kan hamna i samma tracker. Stäng av kanalen med `/sb kanal av` om du inte vill det.
 - **Ny version:** när en kompis har en nyare version visas en rad i chatten och en text i fönstret.
-- **Reserv:** om kanalen inte går att ansluta till, eller är avstängd, skickas datan till din grupp eller raid, till gänglistan och till guilden om guild-synk är på. Gänglistan öppnas med knappen **Gänglista** eller `/sb gäng`, och båda måste ha varandra på listan.
+- **Gänglistan:** öppnas med knappen **Gänglista** eller `/sb gäng`. Viskningar tas bara emot från namn på listan, så båda måste ha varandra där.
 - **Testa:** knappen i gänglistan visar vilka som svarar.
+- **Diagnos:** addonet sparar en kort logg i sin sparfil för felsökning. Den stannar på din dator.
 - **Mördaren:** namnet kommer från spelets Death Recap, eftersom combat loggen är stängd för addons på Forever. Klassfärg visas när klienten ger klassen, eller om du haft fienden i target, mouseover eller på en nameplate.
 - **Rensa:** tar bort dödsfallen men inte anteckningarna.
