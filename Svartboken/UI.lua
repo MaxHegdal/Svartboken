@@ -218,18 +218,9 @@ local function RenderGangPanel()
     p.empty:SetShown(#ns.db.gang == 0)
 
     if ns.testResult then
-        p.channel:SetText(ns.testResult)
-    elseif ns.ChannelActive() then
-        local names = ns.ChannelPeers()
-        if #names > 0 then
-            p.channel:SetText("Kanal ansluten. Hörda: " .. table.concat(names, ", "))
-        else
-            p.channel:SetText("Kanal ansluten. Tryck Testa för att se vilka som svarar.")
-        end
-    elseif ns.db.settings.channelSync then
-        p.channel:SetText("Kanalen är inte ansluten. Grupp och lista används så länge.")
+        p.statusLine:SetText(ns.testResult)
     else
-        p.channel:SetText("Kanalen är avstängd. Grupp och lista används.")
+        p.statusLine:SetText("De du spelar i grupp med läggs till av sig själva.")
     end
 end
 
@@ -258,7 +249,7 @@ local function BuildGangPanel()
 
     local hint = Text(p, 10, C.muted)
     hint:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -3)
-    hint:SetText("Alla med addonet hittar varandra själva. Listan är reserv om kanalen inte fungerar.")
+    hint:SetText("Dödsfall och anteckningar delas med dem här, även utan grupp. Båda måste ha varandra på listan.")
 
     local inputBg = CreateFrame("Frame", nil, p)
     inputBg:SetPoint("TOPLEFT", 14, -52)
@@ -329,6 +320,7 @@ local function BuildGangPanel()
     local close = Button(p, 70, 24, "Stäng", function() p:Hide() end)
     close:SetPoint("BOTTOMRIGHT", -14, 14)
     local test = Button(p, 90, 24, "Testa", function()
+        ns.Diag("test: klick på knappen")
         local ok, reason = ns.RunSyncTest()
         if not ok then
             ns.testResult = reason
@@ -338,10 +330,10 @@ local function BuildGangPanel()
     end)
     test:SetPoint("RIGHT", close, "LEFT", -2, 0)
 
-    p.channel = Text(p, 10, C.muted)
-    p.channel:SetPoint("BOTTOMLEFT", 14, 14)
-    p.channel:SetPoint("RIGHT", test, "LEFT", -8, 0)
-    p.channel:SetWordWrap(true)
+    p.statusLine = Text(p, 10, C.muted)
+    p.statusLine:SetPoint("BOTTOMLEFT", 14, 14)
+    p.statusLine:SetPoint("RIGHT", test, "LEFT", -8, 0)
+    p.statusLine:SetWordWrap(true)
 
     p:SetScript("OnShow", RenderGangPanel)
     p:SetScript("OnHide", function() p.input:ClearFocus() end)
@@ -623,10 +615,9 @@ local function Refresh()
     w.toggleToast.text:SetText("Popup: " .. (s.toast and "på" or "av"))
     w.toggleSync.text:SetText("Synk: " .. (s.sync and "på" or "av"))
     w.toggleGuild.text:SetText("Guild: " .. (s.guildSync and "på" or "av"))
-    w.toggleChannel.text:SetText("Kanal: " .. (s.channelSync and "på" or "av"))
 
     if ns.newerVersion then
-        w.status:SetText("Ny version " .. ns.newerVersion .. " finns, kör Uppdatera-Svartboken")
+        w.status:SetText("Ny version " .. ns.newerVersion .. " finns")
         w.status:SetTextColor(C.gold[1], C.gold[2], C.gold[3], 1)
     else
         w.status:SetText((ns.IsActive() and "Aktiv i open world" or "Vilar i instans") .. "  ·  v" .. ns.VERSION)
@@ -796,11 +787,6 @@ local function Build()
 
     w.gangButton = Button(w, 84, 24, "Gänglista", function() ToggleGangPanel() end)
     w.gangButton:SetPoint("LEFT", w.toggleGuild, "RIGHT", 2, 0)
-
-    w.toggleChannel = Button(w, 76, 24, "", function()
-        ns.SetChannelSync(not ns.db.settings.channelSync)
-    end)
-    w.toggleChannel:SetPoint("LEFT", w.gangButton, "RIGHT", 2, 0)
 
     local clear
     clear = Button(w, 60, 24, "Rensa", function()

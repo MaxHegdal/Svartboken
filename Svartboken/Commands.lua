@@ -76,9 +76,6 @@ local function Debug()
     ns.Print("Version: " .. ns.VERSION .. "  Namn: " .. Describe(ns.playerName)
         .. "  UnitName: " .. Describe(rawName) .. " / " .. Describe(rawSecond))
     ns.Print("Senaste sändning: " .. Describe(ns.lastSendResult))
-    local peers = ns.ChannelPeers()
-    ns.Print("Kanal ansluten: " .. tostring(ns.ChannelActive() == true) .. "  Hörda: "
-        .. (#peers > 0 and table.concat(peers, ", ") or "inga"))
     if not C_DeathRecap then
         ns.Print("C_DeathRecap saknas i den här klienten.")
         return
@@ -116,7 +113,8 @@ local function Help()
     ns.Print("/sb  öppna eller stäng fönstret")
     ns.Print("/sb test  visa popupen en gång")
     ns.Print("/sb flytta  flytta popupen")
-    ns.Print("/sb popup | synk | guild | kanal [på/av]")
+    ns.Print("/sb popup | synk | guild [på/av]")
+    ns.Print("/sb efterlyst test  visa provruta  ·  /sb efterlyst [på/av]  ·  /sb efterlyst ljud [på/av]")
     ns.Print("/sb synktest  samma som knappen Testa")
     ns.Print("/sb gäng  öppna gänglistan  ·  /sb gäng add Anna Berg  ·  /sb gäng del Anna Berg")
     ns.Print("/sb demo  lägg till påhittade rader  ·  /sb demo av  ta bort dem")
@@ -156,18 +154,21 @@ SlashCmdList.SVARTBOKEN = function(input)
         else
             ns.Print(ns.ToggleToastMove() and "Dra rutan dit du vill ha den. Skriv /sb flytta för att låsa." or "Popupen är låst.")
         end
+    elseif cmd == "efterlyst" then
+        if arg == "test" then
+            ns.ShowWantedSample()
+        elseif arg == "ljud" or arg == "ljud på" or arg == "ljud av" then
+            SetFlag("wantedSound", arg:match("^ljud (.+)$"), "Efterlyst-ljud")
+        else
+            SetFlag("wanted", arg, "Efterlyst")
+            if not ns.db.settings.wanted then ns.ClearWanted() end
+        end
     elseif cmd == "popup" then
         SetFlag("toast", arg, "Popup")
     elseif cmd == "synk" or cmd == "sync" then
         SetFlag("sync", arg, "Synk")
     elseif cmd == "guild" then
         SetFlag("guildSync", arg, "Guild-synk")
-    elseif cmd == "kanal" or cmd == "channel" then
-        local enabled = not ns.db.settings.channelSync
-        if arg == "on" or arg == "på" then enabled = true end
-        if arg == "off" or arg == "av" then enabled = false end
-        ns.SetChannelSync(enabled)
-        ns.Print("Kanal: " .. (enabled and "på" or "av"))
     elseif cmd == "demo" then
         if arg == "av" or arg == "off" then
             RemoveDemoData()

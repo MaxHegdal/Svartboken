@@ -17,13 +17,13 @@ local PING, PONG = "P~1", "O~1"
 local PONG_COOLDOWN = 5
 local TEST_SECONDS = 6
 local VERSION_REPLY_COOLDOWN = 60
-local CHANNEL_NAME = "SvartbokenSync"
--- Vänta in General och Trade så att spelarens kanalnummer inte flyttas.
-local JOIN_DELAY = 8
-local JOIN_RETRY = 30
-local JOIN_ATTEMPTS = 4
+local ANNOUNCE_DELAY = 8
+local ROSTER_ANNOUNCE_COOLDOWN = 30
+-- Kanalen från äldre versioner levererade aldrig något och lämnas vid start.
+local OLD_CHANNEL_NAME = "SvartbokenSync"
 
-local ALLOWED_CHANNELS = { PARTY = true, RAID = true, GUILD = true, WHISPER = true, CHANNEL = true }
+local ALLOWED_CHANNELS = { PARTY = true, RAID = true, GUILD = true, WHISPER = true }
+local GROUP_CHANNELS = { PARTY = true, RAID = true, GUILD = true }
 local ALLOWED_TYPES = { player = true, pet = true, unknown = true }
 
 local queue = {}
@@ -31,13 +31,11 @@ local ticker
 local received = {}
 local lastShare = 0
 local offlineUntil, heardAt, pingedAt, whisperedAt = {}, {}, {}, {}
-local peers = {}
-local joinToken = 0
-local joinCalls = 0
 local lastPong = 0
 local activeTest
 local versionAnnounced = false
 local lastVersionReply = 0
+local lastRosterAnnounce = 0
 
 local function Split(s, sep)
     local out, start = {}, 1
@@ -156,84 +154,6 @@ local function CanSend()
     return true
 end
 
-local function ChannelId()
-    if not GetChannelName then return nil end
-    local ok, id = pcall(GetChannelName, CHANNEL_NAME)
-    id = ok and ns.Safe(id) or nil
-    if type(id) == "number" and id > 0 then return id end
-    return nil
-end
-
--- Kanalen är det som gör att alla med addonet hittar varandra utan inställningar.
-function ns.ChannelActive()
-    return ns.db.settings.channelSync and ChannelId() ~= nil
-end
-
--- Vilken funktion som finns skiljer sig mellan klienter, och Blizzards egen kod använder
--- JoinPermanentChannel. Varje försök tar nästa funktion, tills en av dem fungerar.
-local function JoinChannel()
-    local functions = {}
-    if JoinTemporaryChannel then functions[#functions + 1] = { "JoinTemporaryChannel", JoinTemporaryChannel } end
-    if JoinChannelByName then functions[#functions + 1] = { "JoinChannelByName", JoinChannelByName } end
-    if JoinPermanentChannel then functions[#functions + 1] = { "JoinPermanentChannel", JoinPermanentChannel } end
-    if #functions == 0 then
-        ns.Diag("kanal: ingen funktion för att gå med finns")
-        return
-    end
-    joinCalls = joinCalls + 1
-    local chosen = functions[(joinCalls - 1) % #functions + 1]
-    local ok, err = pcall(chosen[2], CHANNEL_NAME)
-    ns.Diag("kanal: " .. chosen[1] .. " ok=" .. tostring(ok) .. (ok and "" or (" fel=" .. ns.Describe(err))))
-end
-
-function ns.ScheduleChannelJoin()
-    if not ns.db.settings.channelSync then return end
-    -- Vid /reload ligger kanalen kvar, och då behövs bara versionen.
-    if ChannelId() then
-        C_Timer.After(JOIN_DELAY, function() ns.AnnounceVersion() end)
-        return
-    end
-    joinToken = joinToken + 1
-    local token, attempt = joinToken, 0
-    local function Try()
-        if token ~= joinToken or not ns.db.settings.channelSync or not ns.IsOpenWorld() or ChannelId() then
-            return
-        end
-        attempt = attempt + 1
-        JoinChannel()
-        if attempt < JOIN_ATTEMPTS then C_Timer.After(JOIN_RETRY, Try) end
-        C_Timer.After(1, function()
-            ns.Diag("kanal: försök " .. attempt .. " gav nummer " .. ns.Describe(ChannelId()))
-            ns.AnnounceVersion()
-            if ns.RefreshUI then ns.RefreshUI() end
-        end)
-    end
-    C_Timer.After(JOIN_DELAY, Try)
-end
-
-function ns.SetChannelSync(enabled)
-    ns.db.settings.channelSync = enabled
-    if enabled then
-        if ns.IsOpenWorld() and not ChannelId() then JoinChannel() end
-    else
-        joinToken = joinToken + 1
-        wipe(peers)
-        if LeaveChannelByName then pcall(LeaveChannelByName, CHANNEL_NAME) end
-    end
-    if ns.RefreshUI then ns.RefreshUI() end
-end
-
--- Namnen på dem som addonet hört i kanalen, nyast först.
-function ns.ChannelPeers()
-    local list = {}
-    for name in pairs(peers) do list[#list + 1] = name end
-    table.sort(list, function(a, b)
-        if peers[a] ~= peers[b] then return peers[a] > peers[b] end
-        return a < b
-    end)
-    return list
-end
-
 local function GangKey(name)
     local full = ns.PlayerName(name)
     return full and ns.Lower(full) or nil
@@ -255,6 +175,7 @@ function ns.AddGang(name)
     if GangKey(name) == GangKey(ns.playerName) then return false, "Det är du själv." end
     if ns.IsGang(name) then return false, name .. " finns redan i gänget." end
     if #ns.db.gang >= MAX_GANG then return false, "Gänget får ha högst " .. MAX_GANG .. " namn." end
+    ns.db.gangRemoved[name] = nil
     ns.db.gang[#ns.db.gang + 1] = name
     if ns.RefreshUI then ns.RefreshUI() end
     return true
@@ -269,8 +190,17 @@ function ns.RemoveGang(name)
             removed = true
         end
     end
+    -- Den du själv tagit bort ska inte komma tillbaka av sig själv.
+    if removed then ns.db.gangRemoved[ns.PlayerName(name)] = true end
     if ns.RefreshUI then ns.RefreshUI() end
     return removed
+end
+
+-- Den du spelat i grupp med hamnar på listan, så att ni når varandra även utan grupp.
+local function AutoAddGang(name)
+    if ns.db.gangRemoved[name] or ns.IsGang(name) then return end
+    local added, reason = ns.AddGang(name)
+    ns.Diag("gäng: " .. name .. (added and " tillagd automatiskt" or (" inte tillagd: " .. ns.Describe(reason))))
 end
 
 local function IsOffline(key)
@@ -301,9 +231,6 @@ local function Targets()
     -- Alla vägar på en gång: dubbletter sorteras bort hos mottagaren, och då spelar det
     -- ingen roll om någon av vägarna inte fungerar.
     local out = {}
-    if ns.ChannelActive() then
-        out[#out + 1] = { channel = "CHANNEL" }
-    end
     if IsInRaid() then
         out[#out + 1] = { channel = "RAID" }
     elseif IsInGroup() then
@@ -329,13 +256,6 @@ local function MarkOffline(key)
         end
     end
     if ns.RefreshUI then ns.RefreshUI() end
-end
-
--- Kanalen ska vara osynlig: inga "Joined Channel" i chatten.
-local function ChannelNoticeFilter(_, _, _, _, _, channelName, _, _, _, _, baseName)
-    channelName, baseName = ns.Safe(channelName), ns.Safe(baseName)
-    if baseName == CHANNEL_NAME then return true end
-    return type(channelName) == "string" and channelName:find(CHANNEL_NAME, 1, true) ~= nil
 end
 
 -- Viskar du någon offline kan servern svara med ett felmeddelande i chatten.
@@ -389,15 +309,6 @@ local function PumpQueue()
     end
     local entry = queue[1]
     local target = entry.target
-    if entry.channel == "CHANNEL" then
-        -- Kanalnumret kan ändras, så det slås upp precis innan det används.
-        local id = ChannelId()
-        if not id then
-            table.remove(queue, 1)
-            return
-        end
-        target = tostring(id)
-    end
     if entry.target then whisperedAt[GangKey(entry.target)] = GetTime() end
     local ok, result = pcall(C_ChatInfo.SendAddonMessage, ns.PREFIX, entry.msg, entry.channel, target)
     ns.lastSendResult = result
@@ -437,21 +348,28 @@ local function Enqueue(msg)
     return allQueued
 end
 
--- Knappen "Testa": frågar gänget om addonet svarar. Ett svar betyder att båda har varandra på listan.
+local function GroupChannel()
+    if IsInRaid() then return "RAID" end
+    if IsInGroup() then return "PARTY" end
+    return nil
+end
+
+-- Knappen "Testa": frågar gruppen och gänglistan om addonet svarar.
 function ns.PingGang()
     if not CanSend() then return false, "Går bara att testa i open world." end
-    local viaChannel = ns.ChannelActive()
-    if viaChannel then
-        queue[#queue + 1] = { msg = PING, channel = "CHANNEL" }
-    elseif #ns.db.gang == 0 then
-        return false, "Gänglistan är tom."
+    local group = GroupChannel()
+    if not group and #ns.db.gang == 0 then
+        return false, "Gänglistan är tom. Spela i grupp en gång, eller lägg till ett namn."
+    end
+    if group then
+        queue[#queue + 1] = { msg = PING, channel = group }
     end
     local now = GetServerTime()
     for _, name in ipairs(ns.db.gang) do
         local key = GangKey(name)
         offlineUntil[key] = nil
         pingedAt[key] = now
-        if #queue < MAX_QUEUE then
+        if not InMyGroup(name) and #queue < MAX_QUEUE then
             queue[#queue + 1] = { msg = PING, channel = "WHISPER", target = name }
         end
     end
@@ -474,12 +392,8 @@ local function FinishTest(test)
     local text
     if #names > 0 then
         text = "Svarade: " .. table.concat(names, ", ")
-    elseif test.viaChannel and test.echoed then
-        text = "Kanalen fungerar, men ingen annan svarade. De andra behöver vara online, i open world och ha en aktuell version."
-    elseif test.viaChannel then
-        text = "Ingen svarade, och din egen signal kom inte tillbaka genom kanalen. Se till att ni har varandra på gänglistan."
     else
-        text = "Ingen svarade. Båda måste ha varandra på gänglistan och vara online."
+        text = "Ingen svarade. De andra behöver vara online, i open world och ha addonet."
     end
     ns.testResult = text
     ns.Print(text)
@@ -487,34 +401,57 @@ local function FinishTest(test)
     if ns.RefreshUI then ns.RefreshUI() end
 end
 
--- Knappen "Testa": visar alltid ett resultat, även när ingen svarar.
-function ns.RunSyncTest()
-    if activeTest then return true end
-    if not CanSend() then return false, "Går bara att testa i open world." end
-    local viaChannel = ns.ChannelActive()
-    if not viaChannel and ns.db.settings.channelSync then JoinChannel() end
-    if not viaChannel and #ns.db.gang == 0 then
-        return false, "Kanalen är inte ansluten och gänglistan är tom. Försök igen om några sekunder."
+local function StartSyncTest()
+    if activeTest then
+        ns.Print("Testet pågår redan, vänta några sekunder.")
+        return true
     end
     local ok, reason = ns.PingGang()
     if not ok then return false, reason end
-    local test = { replies = {}, viaChannel = viaChannel }
+    local test = { replies = {} }
     activeTest = test
     ns.testResult = "Testar, vänta några sekunder..."
+    ns.Print(ns.testResult)
     C_Timer.After(TEST_SECONDS + #queue * SEND_INTERVAL, function() FinishTest(test) end)
     if ns.RefreshUI then ns.RefreshUI() end
     return true
 end
 
--- En gång per session berättar addonet vilken version det har, bara i den dolda kanalen.
+-- Knappen "Testa": visar alltid något, även när ingen svarar eller något kraschar.
+function ns.RunSyncTest()
+    ns.Diag("test: startad")
+    local ok, started, reason = pcall(StartSyncTest)
+    if not ok then
+        local text = "Testa kraschade: " .. ns.Describe(started)
+        ns.Diag("test: " .. text)
+        return false, text
+    end
+    if not started then ns.Diag("test: stopp: " .. ns.Describe(reason)) end
+    return started, reason
+end
+
+-- En gång per session berättar addonet vilken version det har. Det är också så
+-- gruppmedlemmar hittar varandra utan att någon behöver dö först.
 function ns.AnnounceVersion()
-    if versionAnnounced or not ns.ChannelActive() or not CanSend() then return end
+    if versionAnnounced or not CanSend() then return end
     versionAnnounced = true
-    queue[#queue + 1] = { msg = "V~1~" .. ns.VERSION, channel = "CHANNEL" }
+    Enqueue("V~1~" .. ns.VERSION)
+end
+
+function ns.ScheduleAnnounce()
+    C_Timer.After(ANNOUNCE_DELAY, ns.AnnounceVersion)
+end
+
+function ns.OnRosterChanged()
+    local group = GroupChannel()
+    local now = GetServerTime()
+    if not group or not CanSend() or now - lastRosterAnnounce < ROSTER_ANNOUNCE_COOLDOWN then return end
+    lastRosterAnnounce = now
+    queue[#queue + 1] = { msg = "V~1~" .. ns.VERSION, channel = group }
     EnsureTicker()
 end
 
-local function OnPeerVersion(version)
+local function OnPeerVersion(version, channel, sender)
     local delta = ns.CompareVersions(version, ns.VERSION)
     if not delta then return end
     if delta > 0 then
@@ -522,15 +459,14 @@ local function OnPeerVersion(version)
             local first = ns.newerVersion == nil
             ns.newerVersion = version
             if first then
-                ns.Print("En nyare version finns hos en kompis (" .. version .. "). Du har " .. ns.VERSION
-                    .. ". Kör Uppdatera-Svartboken och starta om spelet.")
+                ns.Print("En nyare version finns (" .. version .. "). Du har " .. ns.VERSION
+                    .. ". Hämta den på github.com/MaxHegdal/Svartboken")
             end
             if ns.RefreshUI then ns.RefreshUI() end
         end
-    elseif delta < 0 and CanSend() and ns.ChannelActive()
-        and GetServerTime() - lastVersionReply >= VERSION_REPLY_COOLDOWN then
+    elseif delta < 0 and CanSend() and GetServerTime() - lastVersionReply >= VERSION_REPLY_COOLDOWN then
         lastVersionReply = GetServerTime()
-        queue[#queue + 1] = { msg = "V~1~" .. ns.VERSION, channel = "CHANNEL" }
+        queue[#queue + 1] = { msg = "V~1~" .. ns.VERSION, channel = channel, target = channel == "WHISPER" and sender or nil }
         EnsureTicker()
     end
 end
@@ -598,37 +534,32 @@ function ns.OnAddonMessage(prefix, text, channel, sender)
     if not text or not sender then return end
     if not ns.db.settings.sync or not ALLOWED_CHANNELS[channel] then return end
     if channel == "GUILD" and not ns.db.settings.guildSync then return end
-    if channel == "CHANNEL" and not ns.db.settings.channelSync then return end
 
     local senderShort = ns.PlayerName(sender)
     if not senderShort then return end
     if senderShort == ns.playerName then
-        -- Din egen signal i kanalen visar att den fungerar.
-        if text == PING and channel == "CHANNEL" and activeTest then activeTest.echoed = true end
         return
     end
-    -- Viskningar tas bara emot från namn du själv lagt till i gänget.
-    local fromGang = ns.IsGang(senderShort)
-    if channel == "WHISPER" and not fromGang then return end
+    -- Viskningar tas bara emot från namn på gänglistan.
+    if channel == "WHISPER" and not ns.IsGang(senderShort) then return end
     if not AllowFromSender(senderShort) then return end
+    if GROUP_CHANNELS[channel] then AutoAddGang(senderShort) end
+    local fromGang = ns.IsGang(senderShort)
 
     if fromGang then
         local key = GangKey(senderShort)
         heardAt[key] = GetServerTime()
         offlineUntil[key] = nil
     end
-    if channel == "CHANNEL" then
-        peers[senderShort] = GetServerTime()
-    end
 
     if text == PING then
         if channel == "WHISPER" and CanSend() and #queue < MAX_QUEUE then
             queue[#queue + 1] = { msg = PONG, channel = "WHISPER", target = sender }
             EnsureTicker()
-        elseif channel == "CHANNEL" and CanSend() and #queue < MAX_QUEUE
+        elseif GROUP_CHANNELS[channel] and CanSend() and #queue < MAX_QUEUE
             and GetServerTime() - lastPong >= PONG_COOLDOWN then
             lastPong = GetServerTime()
-            queue[#queue + 1] = { msg = PONG, channel = "CHANNEL" }
+            queue[#queue + 1] = { msg = PONG, channel = channel }
             EnsureTicker()
         end
         if ns.RefreshUI then ns.RefreshUI() end
@@ -640,7 +571,7 @@ function ns.OnAddonMessage(prefix, text, channel, sender)
     end
 
     if text:sub(1, 4) == "V~1~" then
-        OnPeerVersion(text:sub(5))
+        OnPeerVersion(text:sub(5), channel, sender)
         return
     end
 
@@ -664,9 +595,14 @@ end
 
 function ns.InitSync()
     C_ChatInfo.RegisterAddonMessagePrefix(ns.PREFIX)
+    if GetChannelName and LeaveChannelByName then
+        local ok, id = pcall(GetChannelName, OLD_CHANNEL_NAME)
+        if ok and type(ns.Safe(id)) == "number" and id > 0 then
+            pcall(LeaveChannelByName, OLD_CHANNEL_NAME)
+            ns.Diag("lämnade den gamla kanalen")
+        end
+    end
     if ChatFrameUtil and ChatFrameUtil.AddMessageEventFilter then
         ChatFrameUtil.AddMessageEventFilter("CHAT_MSG_SYSTEM", SystemMessageFilter)
-        ChatFrameUtil.AddMessageEventFilter("CHAT_MSG_CHANNEL_NOTICE", ChannelNoticeFilter)
-        ChatFrameUtil.AddMessageEventFilter("CHAT_MSG_CHANNEL_NOTICE_USER", ChannelNoticeFilter)
     end
 end

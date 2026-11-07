@@ -36,10 +36,12 @@ När du dör i open world visas en liten ruta med mördaren. Vänsterklick öppn
 | `/sb popup på` eller `av` | Slå på eller av popupen |
 | `/sb synk på` eller `av` | Slå på eller av synken |
 | `/sb guild på` eller `av` | Synka även via guilden |
-| `/sb kanal på` eller `av` | Slå på eller av den automatiska kanalen |
 | `/sb gäng` | Öppna gänglistan |
 | `/sb gäng add Anna Berg` och `/sb gäng del Anna Berg` | Lägg till eller ta bort ett namn |
 | `/sb synktest` | Samma som knappen Testa |
+| `/sb efterlyst test` | Visa en provruta för Efterlyst |
+| `/sb efterlyst på` eller `av` | Slå på eller av Efterlyst |
+| `/sb efterlyst ljud på` eller `av` | Slå på eller av larmljudet |
 | `/sb demo` och `/sb demo av` | Lägg till och ta bort påhittade rader |
 | `/sb minimap` | Visa eller dölj minimapknappen |
 | `/sb debug` | Visa vad klienten ger addonet |
@@ -48,11 +50,12 @@ När du dör i open world visas en liten ruta med mördaren. Vänsterklick öppn
 
 - **Open world:** addonet lyssnar inte på något i BG, arena, dungeon, raid eller scenario. Dödsfall där sparas inte.
 - **Bara spelare:** spelet talar om vem som styr den som gav dödsstöten, så mobs och miljöskada räknas aldrig. Dödas du av en spelares husdjur krediteras den senaste spelaren som slog dig. Finns ingen spelare bland slagen visas husdjuret i stället.
-- **Synk:** dödsfall och sparade anteckningar skickas samtidigt till en dold kanal som alla med addonet går med i, till din grupp eller raid, till gänglistan och till guilden om guild-synk är på. Dubbletter sorteras bort. Den som är offline eller i en instans missar det som skickas, tills någon trycker på **Dela historik**.
-- **Vem som är med:** vem som helst med addonet på samma ruleset kan hamna i samma tracker. Stäng av kanalen med `/sb kanal av` om du inte vill det.
+- **Synk:** dödsfall och sparade anteckningar skickas samtidigt till din grupp eller raid, till gänglistan och till guilden om guild-synk är på. Dubbletter sorteras bort. Den som är offline eller i en instans missar det som skickas, tills någon trycker på **Dela historik**.
+- **Vem som är med:** alla med addonet du spelar i grupp med läggs automatiskt på gänglistan. Sedan når ni varandra även utan grupp, så länge båda har varandra på listan.
 - **Ny version:** när en kompis har en nyare version visas en rad i chatten och en text i fönstret.
-- **Gänglistan:** öppnas med knappen **Gänglista** eller `/sb gäng`. Viskningar tas bara emot från namn på listan, så båda måste ha varandra där.
+- **Gänglistan:** öppnas med knappen **Gänglista** eller `/sb gäng`. Viskningar tas bara emot från namn på listan. Tar du bort någon med X läggs personen inte till igen av sig själv.
 - **Testa:** knappen i gänglistan visar vilka som svarar.
+- **Efterlyst:** när någon som dödat gänget syns på en nameplate visas en badge högst upp på skärmen, med ett larmljud och en dödskalle med antal dödsfall ovanför personens nameplate. Klicka på badgen för att ta personen i target. Dyker personen upp under en strid går det att klicka först när striden är slut, eftersom spelet låser sådana knappar i strid. Fiendernas nameplates måste vara på, och du ser bara dem som är nära nog för att ha en nameplate.
 - **Diagnos:** addonet sparar en kort logg i sin sparfil för felsökning. Den stannar på din dator.
 - **Mördaren:** namnet kommer från spelets Death Recap, eftersom combat loggen är stängd för addons på Forever. Klassfärg visas när klienten ger klassen, eller om du haft fienden i target, mouseover eller på en nameplate.
 - **Rensa:** tar bort dödsfallen men inte anteckningarna.

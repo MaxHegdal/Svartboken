@@ -23,8 +23,9 @@ local DEFAULTS = {
     toast = true,
     toastSeconds = 8,
     sync = true,
-    channelSync = true,
     guildSync = false,
+    wanted = true,
+    wantedSound = true,
     minimapAngle = 215,
     minimapHidden = false,
 }
@@ -138,12 +139,14 @@ function ns.InitDB()
     db.classes = type(db.classes) == "table" and db.classes or {}
     db.notes = type(db.notes) == "table" and db.notes or {}
     db.gang = type(db.gang) == "table" and db.gang or {}
+    db.gangRemoved = type(db.gangRemoved) == "table" and db.gangRemoved or {}
     db.npcs = type(db.npcs) == "table" and db.npcs or {}
     db.diag = type(db.diag) == "table" and db.diag or {}
     db.settings = type(db.settings) == "table" and db.settings or {}
     for k, v in pairs(DEFAULTS) do
         if db.settings[k] == nil then db.settings[k] = v end
     end
+    db.settings.channelSync = nil
     ns.db = db
     wipe(seen)
     -- Äldre versioner sparade även mobs, miljöskada och okända mördare.

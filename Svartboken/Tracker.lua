@@ -16,6 +16,9 @@ local PASSIVE_EVENTS = {
     "PLAYER_TARGET_CHANGED",
     "UPDATE_MOUSEOVER_UNIT",
     "NAME_PLATE_UNIT_ADDED",
+    "NAME_PLATE_UNIT_REMOVED",
+    "PLAYER_REGEN_ENABLED",
+    "GROUP_ROSTER_UPDATE",
     "CHAT_MSG_ADDON",
 }
 
@@ -346,10 +349,11 @@ local function UpdateActive()
     end
     if active then
         ns.ResumeSync()
-        ns.ScheduleChannelJoin()
+        ns.ScheduleAnnounce()
     else
         pending = nil
         if ns.HideToast then ns.HideToast() end
+        ns.ClearWanted()
     end
 end
 
@@ -360,7 +364,7 @@ end
 local function LogStartup()
     local rawName, rawSecond = UnitName("player")
     local available = {}
-    for _, name in ipairs({ "JoinTemporaryChannel", "JoinChannelByName", "JoinPermanentChannel", "GetChannelName", "RegionalUniqueNamesEnabled" }) do
+    for _, name in ipairs({ "RegionalUniqueNamesEnabled" }) do
         available[#available + 1] = name .. "=" .. tostring(_G[name] ~= nil)
     end
     -- Egen plats, så att startinfon inte trycks ut ur loggen när det är mycket trafik.
@@ -383,6 +387,7 @@ local function HandleEvent(event, ...)
         ns.playerName = ns.PlayerName(UnitName("player"))
         LogStartup()
         ns.InitSync()
+        ns.InitWanted()
         if ns.InitMinimapButton then ns.InitMinimapButton() end
     elseif event == "ADDON_ACTION_BLOCKED" or event == "ADDON_ACTION_FORBIDDEN" then
         local addon, action = ...
@@ -404,6 +409,13 @@ local function HandleEvent(event, ...)
         pcall(ns.ObserveUnit, "mouseover")
     elseif event == "NAME_PLATE_UNIT_ADDED" then
         pcall(ns.ObserveUnit, (...))
+        ns.OnNamePlateAdded((...))
+    elseif event == "NAME_PLATE_UNIT_REMOVED" then
+        ns.OnNamePlateRemoved((...))
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        ns.OnCombatEnded()
+    elseif event == "GROUP_ROSTER_UPDATE" then
+        ns.OnRosterChanged()
     end
 end
 
